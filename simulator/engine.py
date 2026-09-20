@@ -113,11 +113,26 @@ class SimulationEngine:
                 self._close_open_sequence(
                     outcome="INSUFFICIENT_FUNDS", end_attempt=attempt_number - 1
                 )
-                self.termination_reason = (
-                    f"Insufficient funds: next bet of {self.current_bet:,.2f} exceeds "
-                    f"available balance of {self.balance:,.2f} (attempt {attempt_number})."
-                )
-                break
+                # Reset to the initial bet and start a fresh sequence so the
+                # simulation can continue running to max_attempts.  We only
+                # hard-stop if even the initial bet can't be covered (i.e. the
+                # bankroll is truly exhausted).
+                if self.config.initial_bet > self.balance:
+                    self.termination_reason = (
+                        f"Bankrupt: balance of {self.balance:,.2f} is below the "
+                        f"initial bet of {self.config.initial_bet:,.2f} "
+                        f"(attempt {attempt_number})."
+                    )
+                    break
+                self.current_bet = self.config.initial_bet
+                self.sequence_losses = Decimal("0")
+                self.loss_streak = 0
+                self.sequence_id += 1
+                self.sequence_start_attempt = attempt_number
+                self.sequence_max_bet = self.config.initial_bet
+                self.sequence_num_bets = 0
+                attempt_number -= 1  # don't consume this attempt number
+                continue
 
             balance_before = self.balance
             seq_losses_before = self.sequence_losses
