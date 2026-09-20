@@ -1,2 +1,328 @@
-# Gambling-Agorithm-Simulation
-A Python-based terminal simulator for analyzing betting strategies, recovery sequences, bankroll behavior, and statistical risk.
+# Triple Recovery Betting Strategy Simulator
+
+A terminal-based simulator for a predefined betting **recovery/martingale-style
+strategy**, built for **mathematical experimentation and risk analysis only**.
+
+> **This tool does not connect to any real-money betting service, gambling
+> website, or external API.** It generates simulated win/loss outcomes with a
+> local pseudo-random number generator and simply does arithmetic on a
+> virtual balance. It does not claim the strategy is safe, guaranteed, or
+> profitable — see [Risk Disclaimer](#risk-disclaimer) below.
+
+---
+
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Running the Simulator](#running-the-simulator)
+3. [Example Usage](#example-usage)
+4. [The Recovery Algorithm](#the-recovery-algorithm)
+5. [Balance Accounting Model](#balance-accounting-model)
+6. [Statistics Explained](#statistics-explained)
+7. [Exporting Reports](#exporting-reports)
+8. [Project Structure](#project-structure)
+9. [Running the Tests](#running-the-tests)
+10. [Risk Disclaimer](#risk-disclaimer)
+11. [Future Improvements](#future-improvements)
+
+---
+
+## Installation
+
+### Windows 11
+
+1. Install Python 3.10+ from [python.org](https://www.python.org/downloads/) (check "Add python.exe to PATH" during install).
+2. Open PowerShell or Windows Terminal.
+3. Clone or unzip the project, then:
+
+```powershell
+cd triple-recovery-simulator
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Linux
+
+```bash
+cd triple-recovery-simulator
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Dependencies
+
+- [`rich`](https://github.com/Textualize/rich) — terminal dashboard, tables, and report rendering.
+- [`pytest`](https://pytest.org) — running the test suite (not required to run the simulator itself).
+
+No other third-party packages, network access, or APIs are required.
+
+---
+
+## Running the Simulator
+
+```bash
+python main.py
+```
+
+You'll be prompted for:
+
+| Prompt | Meaning | Example |
+|---|---|---|
+| Initial Balance | Starting bankroll | `10000000` |
+| Initial Bet | First bet of every recovery sequence | `21000` |
+| Loss Multiplier | Bet growth factor after a loss (below the threshold) | `3` or `3x` |
+| Maximum Attempts | Hard cap on simulated rounds | `15000` |
+| Win Probability % | Chance of winning any given round (default 50) | `50` |
+| Random Seed | Optional — leave blank for a different run every time | `2026` |
+| Visual delay (ms) | 0 for instant; a small number (5–20ms) to watch the dashboard animate | `0` |
+
+A live dashboard then shows progress, balance, current bet, streaks, and a
+rolling log of recent attempts. Press **Ctrl+C** at any time to stop early —
+the simulator will jump straight to the final report using whatever data was
+collected up to that point.
+
+When the simulation ends (by reaching the attempt cap, running out of funds,
+or being stopped), a full statistics report is printed, and you'll be asked
+whether to export it to `reports/`.
+
+---
+
+## Example Usage
+
+```text
+$ python main.py
+Initial Balance (10000000):
+Initial Bet (21000):
+Loss Multiplier (3):
+Maximum Attempts (15000): 5000
+Win Probability % (default 50) (50):
+Random Seed (blank for nondeterministic) (): 2026
+Visual delay between attempts in ms (0 = fastest...) (0):
+
+Starting simulation... (Ctrl+C to stop early)
+
+[live dashboard runs here]
+
+╔══════════════ SIMULATION COMPLETE ══════════════╗
+║ Attempts Completed: 5,000 / 5,000               ║
+║ Final Balance:      10,340,000.00               ║
+║ ...                                             ║
+╚══════════════════════════════════════════════════╝
+
+[full statistics report, sections A–F]
+
+Export the report now? (y/n) (y): y
+Exported:
+- reports/simulation_2026-09-20_161500.csv
+- reports/simulation_2026-09-20_161500.json
+- reports/simulation_2026-09-20_161500.md
+```
+
+Running with the **same random seed and parameters always reproduces the
+exact same sequence of outcomes** — this is what makes the simulation
+deterministic and testable.
+
+---
+
+## The Recovery Algorithm
+
+Each simulated round is a coin-flip-style bet (configurable win probability,
+default 50%, i.e. even money):
+
+- **Loss** → the current bet is deducted from the balance and added to the
+  current recovery sequence's running loss total. The next bet is scaled up:
+  - If the sequence's cumulative losses are **≤ 100,000**: `next bet = current bet × loss multiplier` (user-configured, e.g. 3x).
+  - If cumulative losses are **> 100,000**: `next bet = current bet × 2` (fixed secondary multiplier).
+- **Win** → the balance receives a net gain equal to the winning bet, the bet
+  resets to the initial bet, and cumulative sequence losses/streak reset to
+  zero — a new recovery sequence begins.
+
+The idea (common to martingale-style systems) is that a single win, however
+late it comes, nets a profit relative to the losses accumulated within that
+sequence — provided the bankroll can sustain the bet growth long enough to
+get there. That "provided" is exactly what this simulator is built to
+stress-test.
+
+---
+
+## Balance Accounting Model
+
+This is documented in the code (`simulator/engine.py`) as well as here,
+because it's the part most likely to be gotten wrong in a naive
+implementation:
+
+- **On a loss:** `balance -= bet`.
+- **On a win:** `balance += bet` (net). For an even-money bet, the net
+  result of winning is exactly the bet amount — the model does **not**
+  separately deduct the stake and then add a gross payout on top, which
+  would double-count the stake.
+
+Because every round applies exactly one `+bet` or `-bet` to the balance, the
+net change in balance over an entire recovery sequence is, by construction:
+
+```
+Sequence Net Profit = Winning Bet − Sum(Previous Losses in the Sequence)
+```
+
+with no separate reconciliation step needed. This is verified directly in
+`tests/test_engine.py::test_balance_never_double_counts_winning_stake` and
+`test_losses_then_win_resets_sequence`.
+
+All monetary values use Python's `decimal.Decimal` (not `float`), quantized
+to cents, to avoid binary floating-point rounding drift over thousands of
+compounding transactions.
+
+### Edge cases handled
+
+- A bet that would exceed the current balance **stops the simulation
+  immediately and safely** — the engine never places a bet it can't afford,
+  and the termination reason records exactly why.
+- A starting balance smaller than the initial bet terminates on attempt 1
+  with zero attempts recorded.
+- Invalid input (non-numeric, zero, negative, absurdly large) is rejected
+  at the prompt with a clear message and re-asked.
+- Extremely large bets are handled natively — Python integers/`Decimal` are
+  arbitrary-precision, so there's no silent integer overflow — but inputs
+  above a sanity ceiling (1 trillion currency units, 5,000,000 attempts) are
+  rejected as unreasonable.
+
+---
+
+## Statistics Explained
+
+The final report has six sections:
+
+- **A. Configuration** — exactly what was run and why it stopped.
+- **B. Financial Statistics** — balances, total wagered vs. gross winning
+  payouts vs. net profit/loss (kept distinct to avoid double-counting),
+  bet-size statistics, drawdown.
+- **C. Win/Loss Statistics** — counts, rates, streaks, sequence-length
+  statistics.
+- **D. Recovery Strategy Statistics** — how often each multiplier fired, how
+  sequences resolved, cumulative-loss behavior.
+- **E. Risk Analysis** — drawdown, largest exposure, insufficient-funds
+  events, bankroll survival rate, extreme losing streaks. This section is
+  deliberately framed as risk, not reassurance.
+- **F. Statistical Distributions** — bucketed histograms for bet sizes,
+  losing streaks, sequence profits, balance ranges, and multiplier usage.
+
+Every number in the report is computed directly from the recorded
+attempt-by-attempt and sequence-by-sequence history — nothing is estimated,
+guessed, or filled in.
+
+---
+
+## Exporting Reports
+
+Three formats are available, written to `reports/` with a timestamped
+filename so previous runs are never overwritten:
+
+- **CSV** (`simulation_<timestamp>.csv`) — full attempt-by-attempt history.
+- **JSON** (`simulation_<timestamp>.json`) — configuration, summary stats,
+  full statistics breakdown, and the complete attempt/sequence data.
+- **Markdown** (`simulation_<timestamp>.md`) — the same human-readable
+  report shown in the terminal, suitable for viewing or archiving.
+
+You can also call the exporters directly from Python:
+
+```python
+from exporters.csv_exporter import export_csv
+from exporters.json_exporter import export_json
+from exporters.markdown_exporter import export_markdown
+from pathlib import Path
+
+export_csv(result, Path("reports/my_run.csv"))
+export_json(result, report, Path("reports/my_run.json"))
+export_markdown(result, report, Path("reports/my_run.md"))
+```
+
+---
+
+## Project Structure
+
+```text
+triple-recovery-simulator/
+│
+├── main.py                  # CLI entry point (prompts, orchestration)
+├── requirements.txt
+├── README.md
+│
+├── simulator/
+│   ├── engine.py             # Core simulation loop & balance accounting
+│   ├── models.py             # Dataclasses: config, attempt/sequence records, result
+│   ├── statistics.py         # Post-run statistics computation
+│   ├── validation.py         # Input parsing & validation
+│   └── random_generator.py   # Seeded win/loss outcome generator
+│
+├── ui/
+│   ├── dashboard.py          # Live Rich dashboard during the run
+│   ├── report_view.py        # Final statistics report rendering
+│   └── styles.py             # Shared color/style constants
+│
+├── exporters/
+│   ├── csv_exporter.py
+│   ├── json_exporter.py
+│   └── markdown_exporter.py
+│
+├── reports/                  # Export output (created on first export)
+│
+└── tests/
+    ├── test_engine.py
+    ├── test_statistics.py
+    └── test_validation.py    # also covers the exporters
+```
+
+---
+
+## Running the Tests
+
+```bash
+pytest tests/ -v
+```
+
+30 tests cover: deterministic seeding, multi-loss-then-win sequences, the
+100,000 cumulative-loss threshold and the 3x→2x switch (including the exact
+boundary), insufficient-bankroll termination, a starting balance smaller
+than the initial bet, invalid inputs, the win-accounting double-count
+regression, and all three export formats.
+
+---
+
+## Risk Disclaimer
+
+This simulator exists to let you **see what a recovery/martingale-style
+strategy actually does under random variance**, not to advocate for it.
+
+- A finite simulation — even one with millions of attempts — **cannot prove**
+  that a betting strategy is safe, that it guarantees recovery of losses, or
+  that it will be profitable over the long run. It shows *one* realization
+  of a random process, for the parameters and random seed you chose.
+- Recovery/martingale-style strategies are mathematically capable of a long
+  string of small wins punctuated by a catastrophic, bankroll-destroying
+  loss streak — this is a known and expected property of the strategy
+  class, not a bug in the simulator. Try a few different seeds and attempt
+  counts and you will see this happen.
+- Nothing in this codebase or its output should be read as gambling,
+  financial, or investment advice.
+
+---
+
+## Future Improvements
+
+Ideas for extending this project:
+
+- True interactive pause/resume via non-blocking keypress detection
+  (e.g. the `keyboard` or `pynput` libraries) rather than Ctrl+C-to-stop.
+- A `--config config.json` / `--headless` CLI mode for batch/unattended runs
+  and CI-friendly regression testing across many seeds.
+- Monte Carlo mode: run the same configuration across N seeds and report
+  the distribution of outcomes (e.g. probability of ruin) instead of a
+  single run.
+- Textual-based full-screen TUI with scrollable report navigation, in place
+  of Rich's linear console output, for very large reports.
+- Configurable payout odds (currently fixed at even money) to model
+  non-50/50 games such as roulette-style bets.
+- Charting (e.g. balance-over-time) via a plotting library for the exported
+  reports.
