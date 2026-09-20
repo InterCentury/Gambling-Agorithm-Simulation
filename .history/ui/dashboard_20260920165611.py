@@ -75,7 +75,7 @@ class Dashboard:
         return Panel(
             Group(header, body, footer),
             border_style=PANEL_BORDER,
-            title="[bold]Gambling Algorithm Simulator[/bold]",
+            title="[bold][/bold]",
         )
 
     def _header(self) -> Align:
